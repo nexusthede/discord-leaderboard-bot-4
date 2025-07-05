@@ -57,7 +57,7 @@ async def setupmessages(ctx):
     conn.commit()
     await ctx.send("✅ Message leaderboard will be posted here.")
 
-@bot.command
+@bot.command()
 async def setupvoice(ctx):
     global voice_channel_id
     voice_channel_id = ctx.channel.id
