@@ -24,12 +24,15 @@ c.execute('''CREATE TABLE IF NOT EXISTS settings (
 )''')
 conn.commit()
 
+# Globals for channel IDs and leaderboard message objects
 message_channel_id = None
 voice_channel_id = None
 leaderboard_msgs = {}
 
+# File to store leaderboard message IDs and channels for persistence
 LEADERBOARD_IDS_FILE = "leaderboard_msg_ids.json"
 
+# Save leaderboard message IDs to JSON to persist after restart
 def save_leaderboard_msg_ids():
     global leaderboard_msgs, message_channel_id, voice_channel_id
     if 'msg' in leaderboard_msgs and 'vc' in leaderboard_msgs:
@@ -41,6 +44,7 @@ def save_leaderboard_msg_ids():
                 "vc_channel": voice_channel_id
             }, f)
 
+# Load leaderboard message IDs from JSON and fetch those messages to keep editing
 async def load_leaderboard_msgs():
     global leaderboard_msgs, message_channel_id, voice_channel_id
     if not os.path.exists(LEADERBOARD_IDS_FILE):
@@ -79,6 +83,7 @@ async def on_ready():
     await bot.change_presence(
         activity=discord.Streaming(name="I love nexus so much", url="https://twitch.tv/nexus")
     )
+    # Load leaderboard messages on bot startup
     await load_leaderboard_msgs()
     update_leaderboards.start()
 
@@ -101,25 +106,25 @@ def is_admin():
         return ctx.author.guild_permissions.administrator
     return commands.check(predicate)
 
-@bot.command(name='setmessages')
+@bot.command(name="set messages")
 @is_admin()
 async def set_messages(ctx):
     global message_channel_id
     message_channel_id = ctx.channel.id
     c.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('message_channel', ?)", (message_channel_id,))
     conn.commit()
-    await ctx.send(f"✅ Message leaderboard will be posted in {ctx.channel.mention}")
+    await ctx.send(f"✅ Message leaderboard will be posted in {ctx.channel.mention}.")
 
-@bot.command(name='setvoice')
+@bot.command(name="set voice")
 @is_admin()
 async def set_voice(ctx):
     global voice_channel_id
     voice_channel_id = ctx.channel.id
     c.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('voice_channel', ?)", (voice_channel_id,))
     conn.commit()
-    await ctx.send(f"✅ Voice leaderboard will be posted in {ctx.channel.mention}")
+    await ctx.send(f"✅ Voice leaderboard will be posted in {ctx.channel.mention}.")
 
-@bot.command(name='postlbs')
+@bot.command(name="post lbs")
 @is_admin()
 async def post_leaderboards(ctx):
     global leaderboard_msgs, message_channel_id, voice_channel_id
@@ -129,7 +134,7 @@ async def post_leaderboards(ctx):
     c.execute("SELECT value FROM settings WHERE key = 'voice_channel'")
     vc = c.fetchone()
     if not msg or not vc:
-        return await ctx.send("❌ Please run `!setmessages` and `!setvoice` first.")
+        return await ctx.send("❌ Please run `!set messages` and `!set voice` first.")
 
     message_channel_id = int(msg[0])
     voice_channel_id = int(vc[0])
@@ -158,138 +163,65 @@ async def post_leaderboards(ctx):
 
     await ctx.send("✅ Leaderboards posted and will auto-update every 10 minutes.")
 
-@bot.command(name='update')
+@bot.command(name="update")
 async def update_leaderboard(ctx):
     if leaderboard_msgs:
         await update_now()
         await ctx.send("✅ Leaderboards updated manually.")
     else:
-        await ctx.send("❌ Leaderboards not started. Use `!postlbs`.")
+        await ctx.send("❌ Leaderboards not started. Use `!post lbs`.")
 
-@bot.command(name='messages')
-async def messages(ctx):
+@bot.command(name="messages")
+async def messages_command(ctx):
     top = c.execute("SELECT * FROM user_stats ORDER BY messages DESC LIMIT 10").fetchall()
     if not top:
         return await ctx.send("No data yet.")
 
+    # Fetch user's rank
+    user_id = str(ctx.author.id)
+    all_users = c.execute("SELECT user_id FROM user_stats ORDER BY messages DESC").fetchall()
+    user_rank = next((i + 1 for i, u in enumerate(all_users) if u[0] == user_id), None)
+
     embed = discord.Embed(title="🏆 Messages Leaderboard")
     embed.description = format_leaderboard(top, False, ctx.guild)
 
-    user_id = str(ctx.author.id)
-    all_users = c.execute("SELECT user_id FROM user_stats ORDER BY messages DESC").fetchall()
-    rank = None
-    for i, u in enumerate(all_users, start=1):
-        if u[0] == user_id:
-            rank = i
-            break
-
-    user_data = c.execute("SELECT messages FROM user_stats WHERE user_id = ?", (user_id,)).fetchone()
-    user_msgs = user_data[0] if user_data else 0
-    total_members = ctx.guild.member_count
-
-    if rank:
-        embed.add_field(
-            name=f"Your Rank: #{rank} • {ctx.author.display_name}",
-            value=f"{user_msgs:,} msgs\n# {rank} • {total_members} members",
-            inline=False
-        )
+    if user_rank:
+        user_row = c.execute("SELECT messages FROM user_stats WHERE user_id = ?", (user_id,)).fetchone()
+        user_messages = user_row[0] if user_row else 0
+        embed.add_field(name="Your Rank", value=f"#{user_rank} • {ctx.author.mention}\n{user_messages} msgs\nRank {user_rank} • {ctx.guild.member_count} members", inline=False)
     else:
-        embed.add_field(
-            name="Your Rank: Unranked",
-            value=f"0 msgs\n# 0 • {total_members} members",
-            inline=False
-        )
+        embed.add_field(name="Your Rank", value="You are not ranked yet.", inline=False)
 
     embed.set_author(name=ctx.guild.name, icon_url=ctx.guild.icon.url if ctx.guild.icon else None)
     embed.set_thumbnail(url=ctx.guild.icon.url if ctx.guild.icon else None)
     embed.set_footer(text="⏳ Updates every 10 minutes")
-
     await ctx.send(embed=embed)
 
-    # Plain-text output below embed
-    lines = []
-    lines.append("🏆 Messages Leaderboard\n")
-    medals = ['🥇', '🥈', '🥉']
-    for i, u in enumerate(top):
-        member = ctx.guild.get_member(int(u[0]))
-        if not member:
-            continue
-        rank_display = medals[i] if i < 3 else f"#{i + 1}"
-        lines.append(f"{rank_display} — {member.mention} • {u[1]:,} msgs")
-    lines.append("")
-    if rank:
-        lines.append(f"Your Rank: #{rank} • {ctx.author.mention}")
-        lines.append(f"{user_msgs:,} msgs")
-        lines.append(f"#{rank} • {total_members} members")
-    else:
-        lines.append("Your Rank: Unranked")
-        lines.append("0 msgs")
-        lines.append(f"#0 • {total_members} members")
-
-    await ctx.send("\n".join(lines))
-
-@bot.command(name='voice')
-async def voice(ctx):
+@bot.command(name="voice")
+async def voice_command(ctx):
     top = c.execute("SELECT * FROM user_stats ORDER BY voice_seconds DESC LIMIT 10").fetchall()
     if not top:
         return await ctx.send("No data yet.")
 
+    # Fetch user's rank
+    user_id = str(ctx.author.id)
+    all_users = c.execute("SELECT user_id FROM user_stats ORDER BY voice_seconds DESC").fetchall()
+    user_rank = next((i + 1 for i, u in enumerate(all_users) if u[0] == user_id), None)
+
     embed = discord.Embed(title="🔊 Voice Leaderboard")
     embed.description = format_leaderboard(top, True, ctx.guild)
 
-    user_id = str(ctx.author.id)
-    all_users = c.execute("SELECT user_id FROM user_stats ORDER BY voice_seconds DESC").fetchall()
-    rank = None
-    for i, u in enumerate(all_users, start=1):
-        if u[0] == user_id:
-            rank = i
-            break
-
-    user_data = c.execute("SELECT voice_seconds FROM user_stats WHERE user_id = ?", (user_id,)).fetchone()
-    user_voice = user_data[0] if user_data else 0
-    total_members = ctx.guild.member_count
-
-    if rank:
-        embed.add_field(
-            name=f"Your Rank: #{rank} • {ctx.author.display_name}",
-            value=f"{format_voice_time(user_voice)}\n# {rank} • {total_members} members",
-            inline=False
-        )
+    if user_rank:
+        user_row = c.execute("SELECT voice_seconds FROM user_stats WHERE user_id = ?", (user_id,)).fetchone()
+        user_voice = user_row[0] if user_row else 0
+        embed.add_field(name="Your Rank", value=f"#{user_rank} • {ctx.author.mention}\n{format_voice_time(user_voice)}\nRank {user_rank} • {ctx.guild.member_count} members", inline=False)
     else:
-        embed.add_field(
-            name="Your Rank: Unranked",
-            value=f"0s\n# 0 • {total_members} members",
-            inline=False
-        )
+        embed.add_field(name="Your Rank", value="You are not ranked yet.", inline=False)
 
     embed.set_author(name=ctx.guild.name, icon_url=ctx.guild.icon.url if ctx.guild.icon else None)
     embed.set_thumbnail(url=ctx.guild.icon.url if ctx.guild.icon else None)
     embed.set_footer(text="⏳ Updates every 10 minutes")
-
     await ctx.send(embed=embed)
-
-    # Plain-text output below embed
-    lines = []
-    lines.append("🔊 Voice Leaderboard\n")
-    medals = ['🥇', '🥈', '🥉']
-    for i, u in enumerate(top):
-        member = ctx.guild.get_member(int(u[0]))
-        if not member:
-            continue
-        rank_display = medals[i] if i < 3 else f"#{i + 1}"
-        lines.append(f"{rank_display} — {member.mention} • {format_voice_time(u[2])}")
-    lines.append("")
-    if rank:
-        lines.append(f"Your Rank: #{rank} • {ctx.author.mention}")
-        lines.append(f"{format_voice_time(user_voice)}")
-        lines.append(f"#{rank} • {total_members} members")
-    else:
-        lines.append("Your Rank: Unranked")
-        lines.append("0s")
-        lines.append(f"#0 • {total_members} members")
-
-    await ctx.send("\n".join(lines))
-
 
 @tasks.loop(minutes=10)
 async def update_leaderboards():
@@ -339,7 +271,7 @@ def format_leaderboard(users, is_voice, guild):
         member = guild.get_member(int(u[0]))
         if not member:
             continue
-        value = format_voice_time(u[2]) if is_voice else f"{u[1]:,} msgs"
+        value = format_voice_time(u[2]) if is_voice else f"{u[1]} msgs"
         rank = medals[i] if i < 3 else f"#{i + 1}"
         lines.append(f"{rank} — {member.mention} • {value}")
     return "\n".join(lines)
