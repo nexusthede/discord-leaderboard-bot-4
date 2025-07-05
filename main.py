@@ -10,7 +10,6 @@ import json
 intents = discord.Intents.all()
 bot = commands.Bot(command_prefix='!', intents=intents)
 
-# Database setup
 conn = sqlite3.connect('stats.db')
 c = conn.cursor()
 c.execute('''CREATE TABLE IF NOT EXISTS user_stats (
@@ -24,9 +23,6 @@ c.execute('''CREATE TABLE IF NOT EXISTS settings (
 )''')
 conn.commit()
 
-# Globals for leaderboard channels and messages
-message_channel_id = None
-voice_channel_id = None
 leaderboard_msgs = {}
 
 LEADERBOARD_FILE = "leaderboard_ids.json"
@@ -42,19 +38,18 @@ def save_leaderboard_msgs():
             }, f)
 
 async def load_leaderboard_msgs():
-    global leaderboard_msgs, message_channel_id, voice_channel_id
+    global leaderboard_msgs
     if not os.path.exists(LEADERBOARD_FILE):
         return
     with open(LEADERBOARD_FILE, "r") as f:
         data = json.load(f)
     try:
-        message_channel_id = data["msg_channel"]
-        voice_channel_id = data["vc_channel"]
-        msg_channel = bot.get_channel(int(message_channel_id))
-        vc_channel = bot.get_channel(int(voice_channel_id))
+        msg_channel = bot.get_channel(int(data["msg_channel"]))
+        vc_channel = bot.get_channel(int(data["vc_channel"]))
         msg_msg = await msg_channel.fetch_message(int(data["msg_id"]))
         vc_msg = await vc_channel.fetch_message(int(data["vc_id"]))
         leaderboard_msgs = {'msg': msg_msg, 'vc': vc_msg}
+        print("✅ Loaded leaderboard messages from file.")
     except Exception as e:
         print(f"Failed to load leaderboard messages: {e}")
 
@@ -79,6 +74,7 @@ async def on_message(message):
     else:
         c.execute("INSERT INTO user_stats (user_id, messages, voice_seconds) VALUES (?, 1, 0)", (user_id,))
     conn.commit()
+    print(f"📩 Counted message from {message.author} (Total messages updated).")
     await bot.process_commands(message)
 
 @bot.event
@@ -91,6 +87,7 @@ async def on_voice_state_update(member, before, after):
 
     if not before.channel and after.channel:
         join_times[key] = discord.utils.utcnow()
+        print(f"🔊 {member} joined voice channel {after.channel.name}")
     elif before.channel and not after.channel and key in join_times:
         seconds = (discord.utils.utcnow() - join_times[key]).total_seconds()
         del join_times[key]
@@ -100,64 +97,73 @@ async def on_voice_state_update(member, before, after):
         else:
             c.execute("INSERT INTO user_stats (user_id, messages, voice_seconds) VALUES (?, 0, ?)", (uid, int(seconds)))
         conn.commit()
+        print(f"🔉 {member} left voice channel {before.channel.name} after {int(seconds)} seconds.")
 
 @bot.command()
 async def setmessages(ctx):
-    global message_channel_id
-    message_channel_id = ctx.channel.id
-    c.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('message_channel', ?)", (message_channel_id,))
+    channel_id = ctx.channel.id
+    c.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('message_channel', ?)", (channel_id,))
     conn.commit()
-    await ctx.send("✅ Message leaderboard will be posted in this channel.")
+    await ctx.send(f"✅ Message leaderboard will be posted in {ctx.channel.mention}")
 
 @bot.command()
 async def setvoice(ctx):
-    global voice_channel_id
-    voice_channel_id = ctx.channel.id
-    c.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('voice_channel', ?)", (voice_channel_id,))
+    channel_id = ctx.channel.id
+    c.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('voice_channel', ?)", (channel_id,))
     conn.commit()
-    await ctx.send("✅ Voice leaderboard will be posted in this channel.")
+    await ctx.send(f"✅ Voice leaderboard will be posted in {ctx.channel.mention}")
 
 @bot.command()
 async def postlbs(ctx):
-    global leaderboard_msgs, message_channel_id, voice_channel_id
-
     c.execute("SELECT value FROM settings WHERE key = 'message_channel'")
     msg = c.fetchone()
     c.execute("SELECT value FROM settings WHERE key = 'voice_channel'")
     vc = c.fetchone()
+
     if not msg or not vc:
         return await ctx.send("❌ Please run `!setmessages` and `!setvoice` first.")
 
-    message_channel_id = int(msg[0])
-    voice_channel_id = int(vc[0])
-    msg_channel = bot.get_channel(message_channel_id)
-    vc_channel = bot.get_channel(voice_channel_id)
+    try:
+        message_channel_id = int(msg[0])
+        voice_channel_id = int(vc[0])
+        msg_channel = bot.get_channel(message_channel_id)
+        vc_channel = bot.get_channel(voice_channel_id)
+        if msg_channel is None or vc_channel is None:
+            return await ctx.send("❌ One or both leaderboard channels not found. Make sure the bot has access.")
+    except Exception:
+        return await ctx.send("❌ Invalid channel IDs in settings. Please reset them.")
 
     top_msg = c.execute("SELECT * FROM user_stats ORDER BY messages DESC LIMIT 10").fetchall()
     top_vc = c.execute("SELECT * FROM user_stats ORDER BY voice_seconds DESC LIMIT 10").fetchall()
 
-    msg_embed = discord.Embed(title="🏆 Messages Leaderboard", description=format_leaderboard(top_msg, False, ctx.guild))
-    vc_embed = discord.Embed(title="🔊 Voice Leaderboard", description=format_leaderboard(top_vc, True, ctx.guild))
+    guild = ctx.guild
 
-    msg_embed.set_author(name=ctx.guild.name, icon_url=ctx.guild.icon.url if ctx.guild.icon else None)
-    vc_embed.set_author(name=ctx.guild.name, icon_url=ctx.guild.icon.url if ctx.guild.icon else None)
-    msg_embed.set_thumbnail(url=ctx.guild.icon.url if ctx.guild.icon else None)
-    vc_embed.set_thumbnail(url=ctx.guild.icon.url if ctx.guild.icon else None)
+    msg_embed = discord.Embed(title="🏆 Messages Leaderboard", description=format_leaderboard(top_msg, False, guild))
+    vc_embed = discord.Embed(title="🔊 Voice Leaderboard", description=format_leaderboard(top_vc, True, guild))
+
+    msg_embed.set_author(name=guild.name, icon_url=guild.icon.url if guild.icon else None)
+    vc_embed.set_author(name=guild.name, icon_url=guild.icon.url if guild.icon else None)
+    msg_embed.set_thumbnail(url=guild.icon.url if guild.icon else None)
+    vc_embed.set_thumbnail(url=guild.icon.url if guild.icon else None)
     msg_embed.set_footer(text="⏳ Updates every 10 minutes")
     vc_embed.set_footer(text="⏳ Updates every 10 minutes")
 
     msg_msg = await msg_channel.send(embed=msg_embed)
     vc_msg = await vc_channel.send(embed=vc_embed)
 
-    leaderboard_msgs = {'msg': msg_msg, 'vc': vc_msg}
+    leaderboard_msgs['msg'] = msg_msg
+    leaderboard_msgs['vc'] = vc_msg
     save_leaderboard_msgs()
+
     await ctx.send("✅ Leaderboards posted and will auto-update every 10 minutes.")
+    print("✅ Leaderboards posted.")
 
 @bot.command()
 async def update(ctx):
     if leaderboard_msgs:
         await update_now()
         await ctx.send("✅ Leaderboards updated manually.")
+        print("🔄 Leaderboards updated manually via command.")
     else:
         await ctx.send("❌ Leaderboards are not started. Use `!postlbs` first.")
 
@@ -165,6 +171,7 @@ async def update(ctx):
 async def update_leaderboards():
     if leaderboard_msgs:
         await update_now()
+        print("🔄 Leaderboards auto-updated.")
 
 async def update_now():
     if not leaderboard_msgs:
@@ -175,6 +182,22 @@ async def update_now():
     guild = bot.get_guild(msg.guild.id)
     if guild is None:
         print("Guild not found!")
+        return
+
+    c.execute("SELECT value FROM settings WHERE key = 'message_channel'")
+    msg_channel_id = c.fetchone()
+    c.execute("SELECT value FROM settings WHERE key = 'voice_channel'")
+    vc_channel_id = c.fetchone()
+
+    if not msg_channel_id or not vc_channel_id:
+        print("Leaderboard channels not set in DB!")
+        return
+
+    msg_channel = bot.get_channel(int(msg_channel_id[0]))
+    vc_channel = bot.get_channel(int(vc_channel_id[0]))
+
+    if msg_channel is None or vc_channel is None:
+        print("Leaderboard channels not found by bot!")
         return
 
     top_msg = c.execute("SELECT * FROM user_stats ORDER BY messages DESC LIMIT 10").fetchall()
@@ -193,14 +216,14 @@ async def update_now():
     try:
         await msg.edit(embed=msg_embed)
         await vc.edit(embed=vc_embed)
+        print("✅ Leaderboard embeds updated successfully.")
     except discord.NotFound:
-        msg_channel = bot.get_channel(message_channel_id)
-        vc_channel = bot.get_channel(voice_channel_id)
         msg_msg = await msg_channel.send(embed=msg_embed)
         vc_msg = await vc_channel.send(embed=vc_embed)
         leaderboard_msgs['msg'] = msg_msg
         leaderboard_msgs['vc'] = vc_msg
         save_leaderboard_msgs()
+        print("⚠️ Leaderboard messages missing, sent new ones.")
     except discord.HTTPException as e:
         print(f"Embed edit failed: {e}")
 
