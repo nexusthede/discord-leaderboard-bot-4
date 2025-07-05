@@ -24,15 +24,12 @@ c.execute('''CREATE TABLE IF NOT EXISTS settings (
 )''')
 conn.commit()
 
-# Globals for channel IDs and leaderboard message objects
 message_channel_id = None
 voice_channel_id = None
 leaderboard_msgs = {}
 
-# File to store leaderboard message IDs and channels for persistence
 LEADERBOARD_IDS_FILE = "leaderboard_msg_ids.json"
 
-# Save leaderboard message IDs to JSON to persist after restart
 def save_leaderboard_msg_ids():
     global leaderboard_msgs, message_channel_id, voice_channel_id
     if 'msg' in leaderboard_msgs and 'vc' in leaderboard_msgs:
@@ -44,7 +41,6 @@ def save_leaderboard_msg_ids():
                 "vc_channel": voice_channel_id
             }, f)
 
-# Load leaderboard message IDs from JSON and fetch those messages to keep editing
 async def load_leaderboard_msgs():
     global leaderboard_msgs, message_channel_id, voice_channel_id
     if not os.path.exists(LEADERBOARD_IDS_FILE):
@@ -83,7 +79,6 @@ async def on_ready():
     await bot.change_presence(
         activity=discord.Streaming(name="I love nexus so much", url="https://twitch.tv/nexus")
     )
-    # Load leaderboard messages on bot startup
     await load_leaderboard_msgs()
     update_leaderboards.start()
 
@@ -133,7 +128,6 @@ async def startleaderboard(ctx):
     msg_channel = bot.get_channel(message_channel_id)
     vc_channel = bot.get_channel(voice_channel_id)
 
-    # Immediately display the leaderboard (no "Loading..." needed)
     top_msg = c.execute("SELECT * FROM user_stats ORDER BY messages DESC LIMIT 10").fetchall()
     top_vc = c.execute("SELECT * FROM user_stats ORDER BY voice_seconds DESC LIMIT 10").fetchall()
 
@@ -170,25 +164,50 @@ async def forceupdate(ctx):
 
 @bot.command()
 async def messages(ctx):
+    guild = ctx.guild
     top = c.execute("SELECT * FROM user_stats ORDER BY messages DESC LIMIT 10").fetchall()
     if not top:
         return await ctx.send("No data yet.")
+
+    user_id = str(ctx.author.id)
+    all_users = c.execute("SELECT user_id FROM user_stats ORDER BY messages DESC").fetchall()
+    rank = next((i + 1 for i, u in enumerate(all_users) if u[0] == user_id), None)
+
     embed = discord.Embed(title="🏆 Text Leaderboard")
-    embed.description = format_leaderboard(top, False, ctx.guild)
-    embed.set_author(name=ctx.guild.name, icon_url=ctx.guild.icon.url if ctx.guild.icon else None)
-    embed.set_thumbnail(url=ctx.guild.icon.url if ctx.guild.icon else None)
+    embed.description = format_leaderboard(top, False, guild)
+
+    if rank:
+        user_stats = c.execute("SELECT messages FROM user_stats WHERE user_id = ?", (user_id,)).fetchone()
+        msgs = user_stats[0] if user_stats else 0
+        embed.description += f"\n\n#{rank} • {ctx.author.mention} • {msgs} msgs\n#rank {rank} • {guild.member_count} members"
+
+    embed.set_author(name=guild.name, icon_url=guild.icon.url if guild.icon else None)
+    embed.set_thumbnail(url=guild.icon.url if guild.icon else None)
     embed.set_footer(text="⏳ Updates every 10 minutes")
     await ctx.send(embed=embed)
 
 @bot.command()
 async def voice(ctx):
+    guild = ctx.guild
     top = c.execute("SELECT * FROM user_stats ORDER BY voice_seconds DESC LIMIT 10").fetchall()
     if not top:
         return await ctx.send("No data yet.")
+
+    user_id = str(ctx.author.id)
+    all_users = c.execute("SELECT user_id FROM user_stats ORDER BY voice_seconds DESC").fetchall()
+    rank = next((i + 1 for i, u in enumerate(all_users) if u[0] == user_id), None)
+
     embed = discord.Embed(title="🔊 Voice Leaderboard")
-    embed.description = format_leaderboard(top, True, ctx.guild)
-    embed.set_author(name=ctx.guild.name, icon_url=ctx.guild.icon.url if ctx.guild.icon else None)
-    embed.set_thumbnail(url=ctx.guild.icon.url if ctx.guild.icon else None)
+    embed.description = format_leaderboard(top, True, guild)
+
+    if rank:
+        user_stats = c.execute("SELECT voice_seconds FROM user_stats WHERE user_id = ?", (user_id,)).fetchone()
+        voice_time = user_stats[0] if user_stats else 0
+        voice_str = format_voice_time(voice_time)
+        embed.description += f"\n\n#{rank} • {ctx.author.mention} • {voice_str}\n#rank {rank} • {guild.member_count} members"
+
+    embed.set_author(name=guild.name, icon_url=guild.icon.url if guild.icon else None)
+    embed.set_thumbnail(url=guild.icon.url if guild.icon else None)
     embed.set_footer(text="⏳ Updates every 10 minutes")
     await ctx.send(embed=embed)
 
@@ -222,7 +241,6 @@ async def update_now():
         await msg.edit(embed=msg_embed)
         await vc.edit(embed=vc_embed)
     except discord.NotFound:
-        # Messages deleted? Resend and save new IDs
         msg_channel = bot.get_channel(message_channel_id)
         vc_channel = bot.get_channel(voice_channel_id)
         msg_msg = await msg_channel.send(embed=msg_embed)
