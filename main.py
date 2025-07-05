@@ -54,7 +54,7 @@ async def load_leaderboard_msgs():
         vc_channel = bot.get_channel(int(voice_channel_id))
         msg_msg = await msg_channel.fetch_message(int(data["msg_id"]))
         vc_msg = await vc_channel.fetch_message(int(data["vc_id"]))
-        leaderboard_msgs = {'msg': msg_msg, 'vc': vc_msg, 'guild': msg_msg.guild}
+        leaderboard_msgs = {'msg': msg_msg, 'vc': vc_msg}
     except Exception as e:
         print(f"Failed to load leaderboard messages: {e}")
 
@@ -80,6 +80,26 @@ async def on_message(message):
         c.execute("INSERT INTO user_stats (user_id, messages, voice_seconds) VALUES (?, 1, 0)", (user_id,))
     conn.commit()
     await bot.process_commands(message)
+
+@bot.event
+async def on_voice_state_update(member, before, after):
+    uid = str(member.id)
+    key = f"{member.guild.id}-{uid}"
+    if not hasattr(bot, 'join_times'):
+        bot.join_times = {}
+    join_times = bot.join_times
+
+    if not before.channel and after.channel:
+        join_times[key] = discord.utils.utcnow()
+    elif before.channel and not after.channel and key in join_times:
+        seconds = (discord.utils.utcnow() - join_times[key]).total_seconds()
+        del join_times[key]
+        row = c.execute("SELECT * FROM user_stats WHERE user_id = ?", (uid,)).fetchone()
+        if row:
+            c.execute("UPDATE user_stats SET voice_seconds = voice_seconds + ? WHERE user_id = ?", (int(seconds), uid))
+        else:
+            c.execute("INSERT INTO user_stats (user_id, messages, voice_seconds) VALUES (?, 0, ?)", (uid, int(seconds)))
+        conn.commit()
 
 @bot.command()
 async def setmessages(ctx):
@@ -129,7 +149,7 @@ async def postlbs(ctx):
     msg_msg = await msg_channel.send(embed=msg_embed)
     vc_msg = await vc_channel.send(embed=vc_embed)
 
-    leaderboard_msgs = {'msg': msg_msg, 'vc': vc_msg, 'guild': ctx.guild}
+    leaderboard_msgs = {'msg': msg_msg, 'vc': vc_msg}
     save_leaderboard_msgs()
     await ctx.send("✅ Leaderboards posted and will auto-update every 10 minutes.")
 
@@ -141,32 +161,6 @@ async def update(ctx):
     else:
         await ctx.send("❌ Leaderboards are not started. Use `!postlbs` first.")
 
-@bot.command()
-async def messages(ctx):
-    top = c.execute("SELECT * FROM user_stats ORDER BY messages DESC LIMIT 10").fetchall()
-    if not top:
-        return await ctx.send("No data yet.")
-    embed = discord.Embed(title="🏆 Messages Leaderboard")
-    embed.description = format_leaderboard(top, False, ctx.guild)
-    embed.set_author(name=ctx.guild.name, icon_url=ctx.guild.icon.url if ctx.guild.icon else None)
-    embed.set_thumbnail(url=ctx.guild.icon.url if ctx.guild.icon else None)
-    # Fixed member count here:
-    embed.set_footer(text=f"⏳ Updates every 10 minutes\nYour Rank\n#1 • {ctx.author.display_name} {top[0][1]} msgs\nRank 1 • {ctx.guild.member_count} members")
-    await ctx.send(embed=embed)
-
-@bot.command()
-async def voice(ctx):
-    top = c.execute("SELECT * FROM user_stats ORDER BY voice_seconds DESC LIMIT 10").fetchall()
-    if not top:
-        return await ctx.send("No data yet.")
-    embed = discord.Embed(title="🔊 Voice Leaderboard")
-    embed.description = format_leaderboard(top, True, ctx.guild)
-    embed.set_author(name=ctx.guild.name, icon_url=ctx.guild.icon.url if ctx.guild.icon else None)
-    embed.set_thumbnail(url=ctx.guild.icon.url if ctx.guild.icon else None)
-    # Fixed member count here:
-    embed.set_footer(text=f"⏳ Updates every 10 minutes\nYour Rank\n#1 • {ctx.author.display_name} {format_voice_time(top[0][2])}\nRank 1 • {ctx.guild.member_count} members")
-    await ctx.send(embed=embed)
-
 @tasks.loop(minutes=10)
 async def update_leaderboards():
     if leaderboard_msgs:
@@ -177,7 +171,11 @@ async def update_now():
         return
     msg = leaderboard_msgs['msg']
     vc = leaderboard_msgs['vc']
-    guild = leaderboard_msgs['guild']
+
+    guild = bot.get_guild(msg.guild.id)
+    if guild is None:
+        print("Guild not found!")
+        return
 
     top_msg = c.execute("SELECT * FROM user_stats ORDER BY messages DESC LIMIT 10").fetchall()
     top_vc = c.execute("SELECT * FROM user_stats ORDER BY voice_seconds DESC LIMIT 10").fetchall()
@@ -189,8 +187,8 @@ async def update_now():
     vc_embed.set_author(name=guild.name, icon_url=guild.icon.url if guild.icon else None)
     msg_embed.set_thumbnail(url=guild.icon.url if guild.icon else None)
     vc_embed.set_thumbnail(url=guild.icon.url if guild.icon else None)
-    msg_embed.set_footer(text=f"⏳ Updates every 10 minutes\nYour Rank\n#1 • {msg.guild.me.display_name}\nRank 1 • {guild.member_count} members")
-    vc_embed.set_footer(text=f"⏳ Updates every 10 minutes\nYour Rank\n#1 • {vc.guild.me.display_name}\nRank 1 • {guild.member_count} members")
+    msg_embed.set_footer(text="⏳ Updates every 10 minutes")
+    vc_embed.set_footer(text="⏳ Updates every 10 minutes")
 
     try:
         await msg.edit(embed=msg_embed)
@@ -224,23 +222,5 @@ def format_voice_time(seconds):
     m = (seconds % 3600) // 60
     s = seconds % 60
     return f"{d}d {h}h {m}m {s}s"
-
-join_times = {}
-
-@bot.event
-async def on_voice_state_update(member, before, after):
-    uid = str(member.id)
-    key = f"{member.guild.id}-{uid}"
-    if not before.channel and after.channel:
-        join_times[key] = discord.utils.utcnow()
-    elif before.channel and not after.channel and key in join_times:
-        seconds = (discord.utils.utcnow() - join_times[key]).total_seconds()
-        del join_times[key]
-        row = c.execute("SELECT * FROM user_stats WHERE user_id = ?", (uid,)).fetchone()
-        if row:
-            c.execute("UPDATE user_stats SET voice_seconds = voice_seconds + ? WHERE user_id = ?", (int(seconds), uid))
-        else:
-            c.execute("INSERT INTO user_stats (user_id, messages, voice_seconds) VALUES (?, 0, ?)", (uid, int(seconds)))
-        conn.commit()
 
 bot.run(os.getenv("TOKEN"))
