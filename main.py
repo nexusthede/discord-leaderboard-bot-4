@@ -31,7 +31,7 @@ leaderboard_msgs = {}
 async def on_ready():
     print(f'Logged in as {bot.user}')
     await bot.change_presence(
-        activity=discord.Streaming(name="I love Nexus so much", url="https://twitch.tv/nexus")
+        activity=discord.Streaming(name="I love nexus so much", url="https://twitch.tv/nexus")
     )
     update_leaderboards.start()
 
@@ -57,7 +57,7 @@ async def setupmessages(ctx):
     conn.commit()
     await ctx.send("✅ Message leaderboard will be posted here.")
 
-@bot.command()
+@bot.command
 async def setupvoice(ctx):
     global voice_channel_id
     voice_channel_id = ctx.channel.id
@@ -85,7 +85,8 @@ async def startleaderboard(ctx):
     vc_msg = await vc_channel.send(embed=vc_embed)
 
     leaderboard_msgs = {'msg': msg_msg, 'vc': vc_msg, 'guild': ctx.guild}
-    await ctx.send("✅ Leaderboards posted and will auto-update every 30 seconds.")
+
+    await ctx.send("✅ Leaderboards posted and will auto-update every 10 minutes.")
 
 @bot.command()
 async def updateleaderboard(ctx):
@@ -96,27 +97,34 @@ async def updateleaderboard(ctx):
         await ctx.send("❌ Leaderboards not started. Use `!startleaderboard`.")
 
 @bot.command()
-async def myrank(ctx):
-    user_id = str(ctx.author.id)
-    msg_ranking = c.execute("SELECT user_id FROM user_stats ORDER BY messages DESC").fetchall()
-    voice_ranking = c.execute("SELECT user_id FROM user_stats ORDER BY voice_seconds DESC").fetchall()
+async def forceupdate(ctx):
+    await updateleaderboard(ctx)
 
-    try:
-        msg_rank = next(i + 1 for i, v in enumerate(msg_ranking) if v[0] == user_id)
-    except StopIteration:
-        msg_rank = None
-
-    try:
-        voice_rank = next(i + 1 for i, v in enumerate(voice_ranking) if v[0] == user_id)
-    except StopIteration:
-        voice_rank = None
-
-    embed = discord.Embed(title=f"📊 {ctx.author.display_name}'s Rank")
-    embed.add_field(name="Text Messages Rank", value=f"#{msg_rank}" if msg_rank else "No data", inline=False)
-    embed.add_field(name="Voice Time Rank", value=f"#{voice_rank}" if voice_rank else "No data", inline=False)
+@bot.command()
+async def messages(ctx):
+    top = c.execute("SELECT * FROM user_stats ORDER BY messages DESC LIMIT 10").fetchall()
+    if not top:
+        return await ctx.send("No data yet.")
+    embed = discord.Embed(title="🏆 Text Leaderboard")
+    embed.description = format_leaderboard(top, False, ctx.guild)
+    embed.set_author(name=ctx.guild.name, icon_url=ctx.guild.icon.url if ctx.guild.icon else None)
+    embed.set_thumbnail(url=ctx.guild.icon.url if ctx.guild.icon else None)
+    embed.set_footer(text="⏳ Updates every 10 minutes")
     await ctx.send(embed=embed)
 
-@tasks.loop(seconds=30)
+@bot.command()
+async def voice(ctx):
+    top = c.execute("SELECT * FROM user_stats ORDER BY voice_seconds DESC LIMIT 10").fetchall()
+    if not top:
+        return await ctx.send("No data yet.")
+    embed = discord.Embed(title="🔊 Voice Leaderboard")
+    embed.description = format_leaderboard(top, True, ctx.guild)
+    embed.set_author(name=ctx.guild.name, icon_url=ctx.guild.icon.url if ctx.guild.icon else None)
+    embed.set_thumbnail(url=ctx.guild.icon.url if ctx.guild.icon else None)
+    embed.set_footer(text="⏳ Updates every 10 minutes")
+    await ctx.send(embed=embed)
+
+@tasks.loop(minutes=10)
 async def update_leaderboards():
     if leaderboard_msgs:
         await update_now()
@@ -128,31 +136,22 @@ async def update_now():
     top_msg = c.execute("SELECT * FROM user_stats ORDER BY messages DESC LIMIT 10").fetchall()
     top_vc = c.execute("SELECT * FROM user_stats ORDER BY voice_seconds DESC LIMIT 10").fetchall()
 
-    server_icon = guild.icon.url if guild.icon else None
+    msg_embed = discord.Embed(title="🏆 Text Leaderboard", description=format_leaderboard(top_msg, False, guild))
+    vc_embed = discord.Embed(title="🔊 Voice Leaderboard", description=format_leaderboard(top_vc, True, guild))
 
-    msg_embed = discord.Embed(
-        title="🏆 Text Leaderboard",
-        description=format_leaderboard(top_msg, False, guild),
-        color=discord.Color.blue()
-    )
-    vc_embed = discord.Embed(
-        title="🔊 Voice Leaderboard",
-        description=format_leaderboard(top_vc, True, guild),
-        color=discord.Color.green()
-    )
+    msg_embed.set_author(name=guild.name, icon_url=guild.icon.url if guild.icon else None)
+    vc_embed.set_author(name=guild.name, icon_url=guild.icon.url if guild.icon else None)
+    msg_embed.set_thumbnail(url=guild.icon.url if guild.icon else None)
+    vc_embed.set_thumbnail(url=guild.icon.url if guild.icon else None)
 
-    msg_embed.set_author(name=guild.name, icon_url=server_icon)
-    vc_embed.set_author(name=guild.name, icon_url=server_icon)
+    msg_embed.set_footer(text="⏳ Updates every 10 minutes")
+    vc_embed.set_footer(text="⏳ Updates every 10 minutes")
 
-    if server_icon:
-        msg_embed.set_thumbnail(url=server_icon)
-        vc_embed.set_thumbnail(url=server_icon)
-
-    msg_embed.set_footer(text="⏳ Updates every 30 seconds")
-    vc_embed.set_footer(text="⏳ Updates every 30 seconds")
-
-    await msg.edit(embed=msg_embed)
-    await vc.edit(embed=vc_embed)
+    try:
+        await msg.edit(embed=msg_embed)
+        await vc.edit(embed=vc_embed)
+    except discord.HTTPException as e:
+        print(f"Embed edit failed: {e}")
 
 def format_leaderboard(users, is_voice, guild):
     medals = ['🥇', '🥈', '🥉']
@@ -163,7 +162,7 @@ def format_leaderboard(users, is_voice, guild):
             continue
         value = format_voice_time(u[2]) if is_voice else f"{u[1]} msgs"
         rank = medals[i] if i < 3 else f"#{i + 1}"
-        lines.append(f"**{rank}** — {member.mention} • {value}")
+        lines.append(f"{rank} — {member.mention} • {value}")
     return "\n".join(lines)
 
 def format_voice_time(seconds):
