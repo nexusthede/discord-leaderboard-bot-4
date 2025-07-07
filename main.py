@@ -130,8 +130,16 @@ async def postlbs(ctx):
 
     guild = ctx.guild
 
-    msg_embed = discord.Embed(title="🏆 Messages Leaderboard", description=format_leaderboard(top_msg, False, guild))
-    vc_embed = discord.Embed(title="🔊 Voice Leaderboard", description=format_leaderboard(top_vc, True, guild))
+    msg_embed = discord.Embed(
+        title="🏆 Messages Leaderboard",
+        description=await format_leaderboard(top_msg, False, guild),
+        color=discord.Color.random()
+    )
+    vc_embed = discord.Embed(
+        title="🔊 Voice Leaderboard",
+        description=await format_leaderboard(top_vc, True, guild),
+        color=discord.Color.random()
+    )
 
     msg_embed.set_author(name=guild.name, icon_url=guild.icon.url if guild.icon else None)
     vc_embed.set_author(name=guild.name, icon_url=guild.icon.url if guild.icon else None)
@@ -190,12 +198,19 @@ async def update_now_for_guild(guild_id):
         msg_msg = await msg_channel.fetch_message(data["msg_id"])
         vc_msg = await vc_channel.fetch_message(data["vc_id"])
     except discord.NotFound:
-        # Messages deleted? Send new ones and update storage
         top_msg = c.execute("SELECT * FROM user_stats ORDER BY messages DESC LIMIT 10").fetchall()
         top_vc = c.execute("SELECT * FROM user_stats ORDER BY voice_seconds DESC LIMIT 10").fetchall()
 
-        msg_embed = discord.Embed(title="🏆 Messages Leaderboard", description=format_leaderboard(top_msg, False, guild))
-        vc_embed = discord.Embed(title="🔊 Voice Leaderboard", description=format_leaderboard(top_vc, True, guild))
+        msg_embed = discord.Embed(
+            title="🏆 Messages Leaderboard",
+            description=await format_leaderboard(top_msg, False, guild),
+            color=discord.Color.random()
+        )
+        vc_embed = discord.Embed(
+            title="🔊 Voice Leaderboard",
+            description=await format_leaderboard(top_vc, True, guild),
+            color=discord.Color.random()
+        )
 
         msg_embed.set_author(name=guild.name, icon_url=guild.icon.url if guild.icon else None)
         vc_embed.set_author(name=guild.name, icon_url=guild.icon.url if guild.icon else None)
@@ -212,12 +227,19 @@ async def update_now_for_guild(guild_id):
         save_leaderboard_data()
         return
 
-    # Update the embeds
     top_msg = c.execute("SELECT * FROM user_stats ORDER BY messages DESC LIMIT 10").fetchall()
     top_vc = c.execute("SELECT * FROM user_stats ORDER BY voice_seconds DESC LIMIT 10").fetchall()
 
-    msg_embed = discord.Embed(title="🏆 Messages Leaderboard", description=format_leaderboard(top_msg, False, guild))
-    vc_embed = discord.Embed(title="🔊 Voice Leaderboard", description=format_leaderboard(top_vc, True, guild))
+    msg_embed = discord.Embed(
+        title="🏆 Messages Leaderboard",
+        description=await format_leaderboard(top_msg, False, guild),
+        color=discord.Color.random()
+    )
+    vc_embed = discord.Embed(
+        title="🔊 Voice Leaderboard",
+        description=await format_leaderboard(top_vc, True, guild),
+        color=discord.Color.random()
+    )
 
     msg_embed.set_author(name=guild.name, icon_url=guild.icon.url if guild.icon else None)
     vc_embed.set_author(name=guild.name, icon_url=guild.icon.url if guild.icon else None)
@@ -229,17 +251,30 @@ async def update_now_for_guild(guild_id):
     await msg_msg.edit(embed=msg_embed)
     await vc_msg.edit(embed=vc_embed)
 
-def format_leaderboard(users, is_voice, guild):
+async def format_leaderboard(users, is_voice, guild):
     medals = ['🥇', '🥈', '🥉']
     lines = []
+
     for i, u in enumerate(users):
-        member = guild.get_member(int(u[0]))
-        if not member:
+        user_id = int(u[0])
+        member = guild.get_member(user_id)
+
+        if member is None:
+            try:
+                member = await guild.fetch_member(user_id)
+            except discord.NotFound:
+                continue
+            except:
+                continue
+
+        if member.bot:
             continue
+
         value = format_voice_time(u[2]) if is_voice else f"{u[1]} msgs"
         rank = medals[i] if i < 3 else f"#{i + 1}"
         lines.append(f"{rank} — {member.mention} • {value}")
-    return "\n".join(lines)
+
+    return "\n".join(lines) if lines else "No data yet!"
 
 def format_voice_time(seconds):
     d = seconds // 86400
